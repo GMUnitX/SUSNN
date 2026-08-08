@@ -63,15 +63,6 @@
 - **运动预测** — STDP 时间不对称性使网络学习时空关联
 - **颤动抑制** — STDP 时间窗的积分效应
 
-## 运行方式
-
-```bash
-pip install numpy opencv-python
-python main.py
-```
-
-操作：`q` 退出，`s` 保存模型，`t` 切换训练/推理模式
-
 ## 关于
 
 - **作者**: GMUnitX
