@@ -86,6 +86,7 @@ class PulseEngine:
         # 睡眠态
         self.sleeping = False
         self.cofire = {}
+        self._free_list = []  # 可复用的死条目索引（防止数组膨胀）
 
         # 上一步放电记录
         self.last_spikes = np.array([], dtype=int)
@@ -298,24 +299,32 @@ class PulseEngine:
             self.cofire.clear()
 
     def _add_conn(self, p, q, wt):
-        """添加新连接"""
-        ci = len(self.w)
-        self.pre = np.append(self.pre, p)
-        self.post = np.append(self.post, q)
-        self.w = np.append(self.w, wt)
+        """添加新连接（优先复用死条目，防止数组膨胀）"""
+        if self._free_list:
+            ci = self._free_list.pop()
+            self.pre[ci] = p
+            self.post[ci] = q
+            self.w[ci] = wt
+        else:
+            ci = len(self.w)
+            self.pre = np.append(self.pre, p)
+            self.post = np.append(self.post, q)
+            self.w = np.append(self.w, wt)
         self.out_adj[p].append((q, ci))
         self.in_adj[q].append((p, ci))
         self.nc += 1
 
     def _del_conn(self, ci):
-        """删除连接（权重置零，从邻接表移除）"""
+        """删除连接（权重置零，回收索引，从邻接表移除）"""
         if ci >= len(self.w) or self.w[ci] == 0:
             return
         p = int(self.pre[ci])
         q = int(self.post[ci])
         self.w[ci] = 0
+        self._free_list.append(ci)
         self.out_adj[p] = [(t, i) for t, i in self.out_adj[p] if i != ci]
         self.in_adj[q] = [(s, i) for s, i in self.in_adj[q] if i != ci]
+        self.nc -= 1
 
     def enter_sleep(self):
         """进入睡眠态"""
