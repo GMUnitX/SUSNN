@@ -1,27 +1,5 @@
 """
-波-神经元自统一神经网络 - 核心脉冲引擎 v2
-
-按更新版设计稿实现：
-
-一、核心脉冲引擎
-1. 三维空间：Face1(z=0,输入) + Hidden(z=0.2~0.8,星图分布) + Face2(z=1,输出)
-2. IF神经元：积分→放电→减法重置（保留惯性，天然不应期）
-3. 动态阈值：膜电位滑动窗口平均自适应（活跃→升高，沉寂→降低）
-4. 永恒扫描器：按三维空间顺序巡回，清醒/睡眠持续无差别运转
-5. 脉冲单步延迟：发放后暂存缓存池，下一时间步交付目标
-6. STDP：基于放电时间差，pre先于post→LTP，post先于pre→LTD
-7. 清醒态 = 基础扫描 + STDP + 动态阈值（结构冻结）
-8. 睡眠态 = 清醒态 + 结构生长（Hebb共放电痕迹）+ 剪枝（权重近零）
-
-二、标准化整面接口
-- input_face_1(signal)：-1~1强度图叠加到Face1膜电位
-- get_output_face_2()：读取Face2当前膜电位作为预测输出
-- input_face_2(error)：-1~1误差图注入Face2（跳过动作神经元）
-
-三、动作执行扩展
-- 动作神经元位于Face2，但不接收误差偏置
-- 外部系统读取动作神经元的放电（脉冲），映射为控制指令
-- 动作改变外部物理环境 → 影响下一帧Face1输入 → 间接闭环
+自统一脉冲神经网络 - 核心脉冲引擎 v2
 """
 
 import numpy as np
@@ -109,7 +87,7 @@ class PulseEngine:
             np.random.uniform(0, 1, n),
             np.ones(n)
         ])
-        # Hidden: 宇宙大尺度结构（团簇+散落）
+        # Hidden: 宇宙大尺度结构（团簇+散落，当前为模拟，实际实现可使用天文数据库）
         nc = max(3, self.nh // 15)
         centers = np.random.uniform(0.1, 0.9, (nc, 3))
         centers[:, 2] = np.random.uniform(0.2, 0.8, nc)
@@ -157,7 +135,7 @@ class PulseEngine:
         self.V[self.s1] += signal
 
     def input_face_2(self, error):
-        """向第二面注入误差偏置（-1~1，跳过动作神经元）"""
+        """向第二面注入误差（-1~1，跳过动作神经元）"""
         self.V[self.s2] += error * self.error_mask
 
     def get_output_face_2(self):
@@ -168,7 +146,7 @@ class PulseEngine:
     def set_action_neurons(self, face2_indices):
         """
         在Face2上标记动作神经元。
-        动作神经元不接收误差偏置，外部系统读取其放电作为控制信号。
+        动作神经元不接收误差，外部系统读取其放电作为控制信号。
 
         参数:
             face2_indices: Face2上的神经元局部索引（0~nf-1）
