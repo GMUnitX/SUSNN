@@ -1,5 +1,5 @@
 # SUSNN:Self-Unifying Spiking Neural Network
-# 自组织脉冲神经网络
+# 自统一脉冲神经网络
 
 一个基于三维空间坐标的脉冲神经网络，通过最小化预测误差驱动学习，具备天然的具身交互需求。
 
