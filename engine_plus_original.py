@@ -22,9 +22,6 @@
     conn_out / conn_in / pulse_active / pulse_next / scan_order / pot_history_sum
       → edge_pre / edge_post / edge_w / pulse_buf / roll_sum
     pot_history 形状由 (N, W) 改为 (W, N) (每步写一行, 内存连续)
-    ★ 中间层坐标改由外部数据源提供: n_middle > 0 时 galaxy_coords 必传,
-      引擎不再内置随机生成; 原生成器移出引擎, 成为 demo 专用占位函数
-      demo_placeholder_galaxy_coords()(仅用于代替真实外部数据来源)。
 """
 
 from __future__ import annotations
@@ -131,7 +128,7 @@ class PulseEngine:
                  new_conn_weight: float = 0.1,
                  hebb_threshold: float = 0.05,
                  prune_threshold: float = 0.005,
-                 galaxy_coords: Optional[np.ndarray] = None,  # 中间层坐标(外部数据源; n_middle>0 时必传)
+                 galaxy_coords: Optional[np.ndarray] = None,
                  seed: int = 42,
                  device: str = "auto",          # 新增: 'auto' | 'cpu' | 'gpu'
                  dtype=np.float64,              # 新增: 状态数值精度
@@ -177,21 +174,10 @@ class PulseEngine:
             raise ValueError(f"device 须为 'auto'/'cpu'/'gpu', 收到 {device!r}")
 
     # -------------------------------------------------------------------
-    # 网络构建: 空间坐标
+    # 网络构建: 空间坐标(与原版一致)
     # -------------------------------------------------------------------
 
     def _build_network(self, galaxy_coords: Optional[np.ndarray]):
-        """
-        构建四层网络的空间坐标。
-
-        中间层坐标【必须来自外部数据源】(galaxy_coords 参数):
-        引擎只消费坐标, 不再内部随机生成。
-        外部坐标只需提供"相对形状" —— 任意量纲/范围均可,
-        引擎会经 _scale_galaxy_coords 自动归一化映射进网络空间。
-
-        demo/测试若无真实数据, 可临时使用
-        demo_placeholder_galaxy_coords() 生成占位坐标(见第三部分)。
-        """
         positions: List[List[float]] = []
         layer_ids: List[int] = []
         idx = 0
@@ -210,26 +196,10 @@ class PulseEngine:
         self.second_start, self.second_end = idx, idx + self.n_face
         idx = self.second_end
 
-        # ---- 中间层: 坐标完全来自外部, 引擎不再内置生成 ----
-        if self.n_middle > 0:
-            if galaxy_coords is None:
-                raise ValueError(
-                    "n_middle > 0 时必须提供 galaxy_coords(中间层空间坐标)。\n"
-                    "该坐标应来自真实外部数据源; demo/测试可临时使用\n"
-                    "demo_placeholder_galaxy_coords() 生成的占位数据\n"
-                    "(仅用于代替真实外部数据来源, 无任何真实依据)。"
-                )
-            coords_in = np.asarray(galaxy_coords, dtype=np.float64)
-            if coords_in.ndim != 2 or coords_in.shape[1] != 3:
-                raise ValueError(
-                    f"galaxy_coords 须为 (n, 3) 形状, 收到 {coords_in.shape}")
-            if coords_in.shape[0] < self.n_middle:
-                raise ValueError(
-                    f"galaxy_coords 数量不足: 需要 {self.n_middle}, "
-                    f"实际 {coords_in.shape[0]} (引擎取前 n_middle 个)")
-            coords = self._scale_galaxy_coords(coords_in[:self.n_middle])
+        if galaxy_coords is not None and len(galaxy_coords) >= self.n_middle:
+            coords = self._scale_galaxy_coords(galaxy_coords[:self.n_middle])
         else:
-            coords = np.empty((0, 3), dtype=np.float64)
+            coords = self._generate_galaxy_coords(self.n_middle)
 
         for i in range(self.n_middle):
             positions.append(coords[i].tolist())
@@ -254,14 +224,6 @@ class PulseEngine:
         self.is_middle_neuron = (self.layer_ids == self.LAYER_MIDDLE)
 
     def _scale_galaxy_coords(self, coords: np.ndarray) -> np.ndarray:
-        """
-        外部坐标接口约定: 引擎只取"相对形状"。
-        对每一维做 min-max 归一化, 映射到网络空间:
-            x ∈ [0, face_cols]
-            y ∈ [0, face_rows]
-            z ∈ [0.3, space_depth - 0.3]   (两端留隙, 中间层不贴面)
-        某一维退化(全等值)时置于目标区间中点。
-        """
         coords = coords.astype(np.float64).copy()
         ranges = [(0.0, float(self.face_cols)),
                   (0.0, float(self.face_rows)),
@@ -274,6 +236,38 @@ class PulseEngine:
             else:
                 coords[:, dim] = (t_lo + t_hi) / 2.0
         return coords
+
+    def _generate_galaxy_coords(self, n: int) -> np.ndarray:
+        coords: List[np.ndarray] = []
+
+        n_clusters = max(1, n // 150)
+        for _ in range(n_clusters):
+            center  = self.rng.uniform(0.05, 0.95, 3)
+            spread  = self.rng.uniform(0.02, 0.06)
+            n_in    = int(self.rng.integers(40, 120))
+            axis    = int(self.rng.integers(0, 3))
+            stretch = float(self.rng.uniform(3.0, 8.0))
+            for _ in range(n_in):
+                off = self.rng.normal(0, spread, 3)
+                off[axis] *= stretch
+                coords.append(np.clip(center + off, 0, 1))
+            if len(coords) >= n:
+                break
+
+        n_groups = max(1, n // 30)
+        for _ in range(n_groups):
+            center = self.rng.uniform(0, 1, 3)
+            spread = self.rng.uniform(0.01, 0.025)
+            n_in   = int(self.rng.integers(5, 25))
+            for _ in range(n_in):
+                coords.append(np.clip(center + self.rng.normal(0, spread, 3), 0, 1))
+            if len(coords) >= n:
+                break
+
+        while len(coords) < n:
+            coords.append(self.rng.uniform(0, 1, 3))
+
+        return self._scale_galaxy_coords(np.array(coords[:n]))
 
     # -------------------------------------------------------------------
     # 空间近邻配对(向量化, 连接初始化与睡眠态生长共用)
@@ -795,67 +789,7 @@ class EngineRunner:
 
 
 # ===========================================================================
-# 第三部分: 演示用占位数据源(非引擎组成部分)
-# ===========================================================================
-# ⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠
-# 【仅为演示/测试而存在 —— 不属于引擎本体】
-#
-# 本函数模拟"某个外部数据来源"向引擎提供中间层空间坐标的过程。
-# 所谓"星系状"分布没有任何真实数据依据, 只是为了构造一个
-# 有密集区/稀疏区的空间拓扑, 便于观察近邻连接与睡眠态结构可塑性的效果。
-#
-# 真实部署时:
-#   1. 用实际数据替换 demo 中的调用, 例如:
-#        galaxy = np.load("middle_layer_coords.npy")   # 或数据库/扫描设备
-#   2. 引擎只取坐标的"相对形状"(内部自动 min-max 归一化),
-#      外部数据处于任何量纲/范围都可以。
-#   3. 本函数可整体删除, PulseEngine 不依赖它。
-# ⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠⚠
-
-def demo_placeholder_galaxy_coords(n: int, seed: int = 42) -> np.ndarray:
-    """
-    【占位数据源, 仅用于 demo/测试, 代替真实外部数据来源】
-
-    生成 n 个 [0,1]^3 的"星系状"随机坐标:
-    - 大星团(n//150 个, 各 40~120 点): 高斯核 + 单轴拉伸 → 细长"星臂"
-    - 小星群(n//30 个, 各 5~25 点): 紧致高斯团块
-    - 不足部分: [0,1] 均匀随机补齐
-    """
-    rng = np.random.default_rng(seed)
-    coords: List[np.ndarray] = []
-
-    n_clusters = max(1, n // 150)
-    for _ in range(n_clusters):
-        center  = rng.uniform(0.05, 0.95, 3)
-        spread  = rng.uniform(0.02, 0.06)
-        n_in    = int(rng.integers(40, 120))
-        axis    = int(rng.integers(0, 3))
-        stretch = float(rng.uniform(3.0, 8.0))
-        for _ in range(n_in):
-            off = rng.normal(0, spread, 3)
-            off[axis] *= stretch
-            coords.append(np.clip(center + off, 0, 1))
-        if len(coords) >= n:
-            break
-
-    n_groups = max(1, n // 30)
-    for _ in range(n_groups):
-        center = rng.uniform(0, 1, 3)
-        spread = rng.uniform(0.01, 0.025)
-        n_in   = int(rng.integers(5, 25))
-        for _ in range(n_in):
-            coords.append(np.clip(center + rng.normal(0, spread, 3), 0, 1))
-        if len(coords) >= n:
-            break
-
-    while len(coords) < n:
-        coords.append(rng.uniform(0, 1, 3))
-
-    return np.array(coords[:n])
-
-
-# ===========================================================================
-# 第四部分: 演示(与原 demo 逻辑相同, 附计时)
+# 第三部分: 演示(与原 demo 逻辑相同, 附计时)
 # ===========================================================================
 
 def demo_prediction_learning():
@@ -863,15 +797,9 @@ def demo_prediction_learning():
     print("核心脉冲引擎(向量化版) —— 预测误差学习演示")
     print("=" * 70)
 
-    # ---- 中间层坐标: 占位数据源(★ 仅为演示, 代替真实外部数据 ★) ----
-    # 真实场景此处应接入实际外部数据, 例如:
-    #     galaxy = np.load("middle_layer_coords.npy")
-    galaxy = demo_placeholder_galaxy_coords(n=500, seed=42)
-
     engine = PulseEngine(face_rows=16, face_cols=16, n_middle=500, n_action=4,
                          connection_radius=4.0, space_depth=12.0,
-                         window_size=100, stdp_tau=15.0, seed=42,
-                         galaxy_coords=galaxy)
+                         window_size=100, stdp_tau=15.0, seed=42)
     print(f"\n运行设备   : {engine.device_name}")
     print(f"总神经元数 : {engine.n_total}")
     print(f"初始连接数 : {engine.get_connection_count()}")
@@ -936,11 +864,8 @@ def demo_background_runner():
     print("\n" + "=" * 70)
     print("后台运行器演示")
     print("=" * 70)
-
-    # ---- 中间层坐标: 占位数据源(仅为演示, 代替真实外部数据) ----
-    galaxy = demo_placeholder_galaxy_coords(n=300, seed=123)
     engine = PulseEngine(face_rows=12, face_cols=12, n_middle=300,
-                         n_action=4, seed=123, galaxy_coords=galaxy)
+                         n_action=4, seed=123)
     runner = EngineRunner(engine, steps_per_sec=200)
     runner.start()
     print(f"引擎后台线程已启动 (200 steps/s, 设备 {engine.device_name})")
