@@ -1,11 +1,11 @@
 # SUSNN:Self-Unifying Spiking Neural Network
 # 自统一脉冲神经网络
 
-论文：[DOI badge](https://doi.org/10.5281/zenodo.22195346)
-Paper: [DOI badge](https://doi.org/10.5281/zenodo.22195346)
+[论文 DOI](https://doi.org/10.5281/zenodo.22195346)
+[Paper DOI badge](https://doi.org/10.5281/zenodo.22195346)
 
-文档：https://gmunitx.com/index.php/2026/08/06/%e8%87%aa%e7%bb%9f%e4%b8%80%e8%84%89%e5%86%b2%e7%a5%9e%e7%bb%8f%e7%bd%91%e7%bb%9c%e8%ae%be%e8%ae%a1%e6%96%87%e6%a1%a3/
-Document: https://gmunitx.com/index.php/2026/08/06/%e8%87%aa%e7%bb%9f%e4%b8%80%e8%84%89%e5%86%b2%e7%a5%9e%e7%bb%8f%e7%bd%91%e7%bb%9c%e8%ae%be%e8%ae%a1%e6%96%87%e6%a1%a3/
+[文档]https://gmunitx.com/index.php/2026/08/06/%e8%87%aa%e7%bb%9f%e4%b8%80%e8%84%89%e5%86%b2%e7%a5%9e%e7%bb%8f%e7%bd%91%e7%bb%9c%e8%ae%be%e8%ae%a1%e6%96%87%e6%a1%a3/
+[Document]https://gmunitx.com/index.php/2026/08/06/%e8%87%aa%e7%bb%9f%e4%b8%80%e8%84%89%e5%86%b2%e7%a5%9e%e7%bb%8f%e7%bd%91%e7%bb%9c%e8%ae%be%e8%ae%a1%e6%96%87%e6%a1%a3/
 
 # 中文
 
