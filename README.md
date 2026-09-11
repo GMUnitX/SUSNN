@@ -9,7 +9,10 @@
 
 # 中文
 
-一个基于三维空间坐标的脉冲神经网络，通过外部注入信号驱动运行，具备天然的具身交互需求。
+一个基于三维空间坐标的脉冲神经网络，采用预全连接初始化，通过外部注入信号驱动运行，具备天然的具身交互需求。
+
+> **分支说明**  
+> 本分支为独立实验分支，不继承主分支中的睡眠态、结构可塑性、误差驱动、预测闭环等设计。本分支采用预全连接初始化，所有潜在连接在初始时即已建立，后续仅通过 STDP 调整权重，权重衰减至接近 0 即视为剪枝。
 
 ---
 
@@ -34,8 +37,9 @@
 
 避免了随机初始化的空洞和规则网格的过度对称，是天然的类人脑结构。
 
-> **工程变体：预全连接初始化**  
-> 作为一种替代方案，可在初始化时将所有满足连接半径的神经元对全部建立连接，权重设为较小的随机值（接近 0 的权重等效于被剪枝）。这样，网络在初始时就拥有全部潜在连接，后续仅通过 STDP 调整权重，无需动态生长搜索。代价是初始内存占用较大，但计算更高效、更确定。
+#### 预全连接初始化
+
+在初始化时，将所有满足连接半径的神经元对全部建立连接，权重设为较小的随机值。接近 0 的权重等效于被剪枝。这样，网络在初始时就拥有全部潜在连接，后续仅通过 STDP 调整权重，无需动态生长搜索。代价是初始内存占用较大，但计算更高效、更确定。
 
 #### 连接约束
 
@@ -57,7 +61,7 @@
 
 一个时间步 = 完成一次对所有神经元的完整遍历（即一轮全空间扫描）。
 
-每一轮计算中，每个神经元恰好被访问一次，执行一次状态更新。该时间步是引擎内部最基本的时间单位，所有可塑性规则（STDP、动态阈值、睡眠期的结构统计）均基于这个时间步进行计数和计算。
+每一轮计算中，每个神经元恰好被访问一次，执行一次状态更新。该时间步是引擎内部最基本的时间单位，所有可塑性规则（STDP、动态阈值）均基于这个时间步进行计数和计算。
 
 ---
 
@@ -65,7 +69,7 @@
 
 引擎内部维持一个不停止的扫描过程，按照一定的顺序访问所有神经元并进行计算。这是一种应对硬件资源不足的方式，资源足够时也可以直接一次性计算，但由于可以理解为被同时扫描，下文中仍用“扫描过程”代指该过程。
 
-这个扫描过程是引擎最底层的运行机制，在清醒态和睡眠态中持续运行，不受状态切换的影响。
+这个扫描过程是引擎最底层的运行机制，持续运行，不受状态切换的影响。
 
 每当访问到某个神经元时，该神经元执行以下操作：
 
@@ -80,44 +84,14 @@
 
 ---
 
-### 清醒态
+### 运行状态
 
-在此状态下，引擎执行以下操作：
+本分支不设睡眠态。引擎始终以同一套规则持续运行：
 
 - **基础扫描与脉冲传导**：扫描器持续运行，所有神经元按上述操作正常更新。
 - **STDP（脉冲时间依赖可塑性）**：每对前后发放的神经元，根据它们放电的时间差，实时调整两者之间已有突触连接的权重。
 - **动态阈值更新**：每个神经元的放电阈值随其膜电位滑动窗口持续自适应调节。
-
-> 清醒态不涉及连接的生成和剪枝。已有连接的权重可以变化，但不会生成新连接，也不会删除旧连接。
-
----
-
-### 睡眠态
-
-进入睡眠后，引擎的基础扫描与脉冲传导机制完全不变。
-
-睡眠态与清醒态的唯一区别在于增加了结构可塑性操作：
-
-- **生长新连接**：对于满足连接半径条件且符合共同放电规律（Hebb痕迹）的神经元对，生成新的突触连接。新连接的初始权重设为一个较小的正值。
-- **剪枝冗余连接**：删除那些权重已衰减至接近于零的冗余连接。
-
-总结如下：
-
-| 状态 | 操作 |
-|------|------|
-| 清醒态 | 基础扫描 + STDP（权重调节）+ 动态阈值 |
-| 睡眠态 | 基础扫描 + STDP（权重调节）+ 动态阈值 + 结构生长与剪枝 |
-
-> 睡眠态期间并不额外统计共同放电历史，而是依赖系统自身不停息的运行和外部输入。两者的底层完全相同，睡眠仅是在其之上开启了额外的结构重塑性操作。
-
-> **预全连接替代方案**  
-> 若采用预全连接初始化（见“初始化方式”），则睡眠态的结构可塑性操作可被完全省略。此时，所有潜在连接已在初始时存在，仅靠 STDP 调整权重，权重衰减至接近 0 即视为剪枝。该模式避免了睡眠态中昂贵的近邻搜索与连接重建开销，适合硬件资源充足、追求低延迟与确定性的部署场景；代价是初始内存占用显著增大。
-
----
-
-### 睡眠态的触发与退出
-
-睡眠态的进入和退出均由外部程序手动控制，暂不内置自动触发策略。睡眠时长的设定（即睡眠阶段持续多少个时间步）亦留待实验研究确定。接口层面仅提供“进入睡眠”和“退出睡眠”的切换控制，不预设具体参数。
+- **剪枝**：权重衰减至接近 0 的连接视为被剪枝，不再参与有效计算。
 
 ---
 
@@ -128,6 +102,7 @@
 - **向第一面传入信号**：外部系统将一整面模拟强度图（每个值在 -1 到 1 之间）一次性注入第一面的所有神经元。每个位置的强度值直接叠加到对应神经元的当前膜电位上。
 - **从第二面读取输出**：外部系统一次性读取第二面所有神经元的当前实时膜电位值（连续标量），作为网络对当前输入的综合输出。
 - **向第二面注入信号**：外部系统将计算得到的信号（同样为 -1 到 1 的整面强度图）一次性注入第二面除动作神经元外的神经元，直接叠加到其膜电位上。
+
 > 引擎内部不设“收敛判定”或“步长等待”。外部系统按照自身的采样频率随时进行整面读写，引擎始终在后台持续运行其扫描过程。
 
 ---
@@ -160,7 +135,10 @@
 
 # English
 
-A spiking neural network structured by 3D spatial coordinates, driven by externally injected signals, with intrinsic embodied interaction needs.
+A spiking neural network structured by 3D spatial coordinates, using pre-fully-connected initialization, driven by externally injected signals, with intrinsic embodied interaction needs.
+
+> **Branch Note**  
+> This is an independent experimental branch. It does not inherit sleep states, structural plasticity, error-driven learning, or prediction loops from the main branch. This branch uses pre-fully-connected initialization: all potential connections are established at initialization, and only STDP adjusts weights thereafter. Weights decaying to near 0 are treated as pruned.
 
 ---
 
@@ -185,8 +163,9 @@ The initial spatial positions of neurons in the intermediate network can be deri
 
 This avoids the hollow regions of random initialization and the excessive symmetry of regular grids, providing a naturally brain-like structure.
 
-> **Engineering Variant: Pre-Fully-Connected Initialization**  
-> As an alternative, all neuron pairs satisfying the connection radius can be connected at initialization, with weights set to small random values (weights near 0 are equivalent to being pruned). Thus, the network possesses all potential connections from the start, and only STDP adjusts weights thereafter, eliminating dynamic growth search. The cost is larger initial memory usage, but computation is more efficient and deterministic.
+#### Pre-Fully-Connected Initialization
+
+At initialization, all neuron pairs satisfying the connection radius are connected, with weights set to small random values. Weights near 0 are equivalent to being pruned. Thus, the network possesses all potential connections from the start, and only STDP adjusts weights thereafter, eliminating dynamic growth search. The cost is larger initial memory usage, but computation is more efficient and deterministic.
 
 #### Connection Constraint
 
@@ -208,7 +187,7 @@ Each neuron uses a variant of the integrate-and-fire model, with the following c
 
 One time step = completing one full traversal of all neurons (i.e., one round of full-space scanning).
 
-In each round, every neuron is visited exactly once and performs one state update. This time step is the engine's most fundamental temporal unit. All plasticity rules (STDP, dynamic thresholds, and structural statistics during sleep) are counted and computed based on this time step.
+In each round, every neuron is visited exactly once and performs one state update. This time step is the engine's most fundamental temporal unit. All plasticity rules (STDP, dynamic thresholds) are counted and computed based on this time step.
 
 ---
 
@@ -216,7 +195,7 @@ In each round, every neuron is visited exactly once and performs one state updat
 
 The engine maintains a non-stop scanning process that visits and computes neurons in a fixed order. This is a way to cope with limited hardware resources; with sufficient resources, computation could be done all at once. However, since the process can be conceptually treated as simultaneous scanning, it is referred to as "scanning" throughout.
 
-This scanning mechanism is the engine's most fundamental operating layer. It runs continuously during both wake and sleep states, unaffected by state transitions.
+This scanning mechanism is the engine's most fundamental operating layer. It runs continuously, unaffected by state transitions.
 
 Whenever a neuron is visited, it performs the following operations:
 
@@ -231,44 +210,14 @@ Spikes fired by a neuron are not immediately applied to targets; they are tempor
 
 ---
 
-### Wake State
+### Operating State
 
-In this state, the engine performs:
+This branch has no sleep state. The engine always runs under the same set of rules:
 
 - **Basic scanning and spike conduction**: The scanner runs continuously, and all neurons update normally as described above.
 - **STDP (Spike-Timing-Dependent Plasticity)**: For each pair of pre- and post-synaptic neurons, the weight of their existing synaptic connection is adjusted in real time based on the temporal difference between their spikes.
 - **Dynamic threshold updates**: Each neuron's firing threshold continuously adapts according to its membrane-potential sliding window.
-
-> In the wake state, no connection generation or pruning occurs. Existing connection weights may change, but no new connections are created and no old ones are deleted.
-
----
-
-### Sleep State
-
-Upon entering sleep, the engine's basic scanning and spike conduction mechanisms remain completely unchanged.
-
-The sole difference between sleep and wake states is the addition of structural plasticity operations:
-
-- **Growth of new connections**: For neuron pairs that satisfy the connection-radius condition and exhibit co-activation patterns (Hebbian traces), new synaptic connections are formed. Initial weights are set to a small positive value.
-- **Pruning of redundant connections**: Connections whose weights have decayed to near zero are removed.
-
-Summary:
-
-| State | Operations |
-|-------|------------|
-| Wake  | Basic scanning + STDP (weight adjustment) + Dynamic thresholds |
-| Sleep | Basic scanning + STDP (weight adjustment) + Dynamic thresholds + Structural growth and pruning |
-
-> During sleep, co-activation histories are not separately tallied. Instead, the system relies on its own uninterrupted operation and external inputs. The underlying mechanisms are identical in both states; sleep merely enables additional structural-plasticity operations on top.
-
-> **Pre-Fully-Connected Alternative**  
-> If pre-fully-connected initialization is used (see "Initialization Method"), structural plasticity operations during sleep can be omitted entirely. All potential connections already exist initially; STDP alone adjusts weights, and weights decaying to near 0 are treated as pruned. This mode avoids the expensive neighbor search and connection rebuilding overhead of sleep, making it suitable for deployment scenarios with sufficient hardware resources and demands for low latency and determinism; the cost is significantly larger initial memory usage.
-
----
-
-### Sleep State Trigger and Exit
-
-The entry to and exit from the sleep state are manually controlled by external programs; no automatic triggering strategy is built in. The duration of sleep (i.e., how many time steps the sleep phase lasts) is left for experimental determination. At the interface level, only "enter sleep" and "exit sleep" switching controls are provided, without preset parameters.
+- **Pruning**: Connections whose weights have decayed to near 0 are treated as pruned and no longer participate in effective computation.
 
 ---
 
