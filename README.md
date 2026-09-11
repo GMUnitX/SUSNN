@@ -39,7 +39,7 @@
 
 #### 预全连接初始化
 
-在初始化时，将所有满足连接半径的神经元对全部建立连接，权重设为较小的随机值。接近 0 的权重等效于被剪枝。这样，网络在初始时就拥有全部潜在连接，后续仅通过 STDP 调整权重，无需动态生长搜索。代价是初始内存占用较大，但计算更高效、更确定。
+在初始化时，将所有满足连接半径的神经元对全部建立连接，权重设为随机值。接近 0 的权重等效于被剪枝。这样，网络在初始时就拥有全部潜在连接，后续仅通过 STDP 调整权重，无需动态生长搜索。代价是初始内存占用较大，但计算更高效、更确定。
 
 #### 连接约束
 
@@ -130,127 +130,8 @@
 
 这些动作神经元本身不直接接收信号，但它们输出的动作会改变外部环境，进而影响下一时刻传入第一面的输入，因此通过外部世界间接形成了完整的闭环控制回路。
 
-
-
-# English
-
-A spiking neural network structured by 3D spatial coordinates, using pre-fully-connected initialization, driven by externally injected signals, with intrinsic embodied interaction needs.
-
-> **Branch Note**  
-> This is an independent experimental branch. It does not inherit sleep states, structural plasticity, error-driven learning, or prediction loops from the main branch. This branch uses pre-fully-connected initialization: all potential connections are established at initialization, and only STDP adjusts weights thereafter. Weights decaying to near 0 are treated as pruned.
-
 ---
 
-## Core Spiking Engine
+### 后记
 
-### Network Spatial Structure
-
-The engine is a spiking neural network with 3D spatial coordinates, divided into three functional regions:
-
-- **First face**: Receives external input.
-- **Second face**: Hosts motor neurons.
-- **Intermediate neural network**: Connects the first face to the second face.
-
-The input neurons on the first face and the motor neurons on the second face are not correspondingly paired.
-
-#### Initialization Method
-
-The initial spatial positions of neurons in the intermediate network can be derived from **scaled coordinates of large-scale cosmic galaxy distributions**. This initialization endows the network with two inherent properties simultaneously:
-
-- **Local clustering** (ordered column-like structures)
-- **Global scattering** (disordered background)
-
-This avoids the hollow regions of random initialization and the excessive symmetry of regular grids, providing a naturally brain-like structure.
-
-#### Pre-Fully-Connected Initialization
-
-At initialization, all neuron pairs satisfying the connection radius are connected, with weights set to small random values. Weights near 0 are equivalent to being pruned. Thus, the network possesses all potential connections from the start, and only STDP adjusts weights thereafter, eliminating dynamic growth search. The cost is larger initial memory usage, but computation is more efficient and deterministic.
-
-#### Connection Constraint
-
-Each neuron has a fixed connection radius. Neurons beyond this radius cannot form synaptic connections.
-
----
-
-### Neuron Model
-
-Each neuron uses a variant of the integrate-and-fire model, with the following core rules:
-
-- **Integration**: Membrane potential continuously accumulates spike inputs from external sources and other neurons.
-- **Fire and subtractive reset**: When membrane potential reaches the current firing threshold, the neuron fires a spike, and then the threshold is directly subtracted from the membrane potential. The remaining surplus is retained as the starting point for the next integration cycle. This reset method preserves neuronal inertia and naturally creates a refractory-like state after firing, preventing excessive discharges that would occur if the membrane potential were not reduced.
-- **Dynamic threshold**: The firing threshold of each neuron is not fixed. Instead, it is dynamically adjusted in real time based on the sliding-window average of that neuron's membrane potential over the recent past. The threshold adaptively rises when the neuron is active and falls when it is silent, thus maintaining a stable overall firing rate across the network.
-
----
-
-### Definition of a Time Step
-
-One time step = completing one full traversal of all neurons (i.e., one round of full-space scanning).
-
-In each round, every neuron is visited exactly once and performs one state update. This time step is the engine's most fundamental temporal unit. All plasticity rules (STDP, dynamic thresholds) are counted and computed based on this time step.
-
----
-
-### Basic Operating Mechanism
-
-The engine maintains a non-stop scanning process that visits and computes neurons in a fixed order. This is a way to cope with limited hardware resources; with sufficient resources, computation could be done all at once. However, since the process can be conceptually treated as simultaneous scanning, it is referred to as "scanning" throughout.
-
-This scanning mechanism is the engine's most fundamental operating layer. It runs continuously, unaffected by state transitions.
-
-Whenever a neuron is visited, it performs the following operations:
-
-1. Any external analog signal injected at its location (if present) is directly added to its membrane potential.
-2. Pending spike charges from other neurons' connections (already in the buffer) are accumulated into the membrane potential.
-3. It checks whether the membrane potential has reached the current threshold:
-   - If yes, it fires a spike, places the spike into the outgoing buffer queue according to connection weights (to be delivered when the target neuron is visited in the next round), and then performs the subtractive reset.
-   - If not, it only integrates and takes no firing action.
-4. Based on the updated membrane potential, it refreshes the sliding-window average and adjusts its dynamic threshold.
-
-Spikes fired by a neuron are not immediately applied to targets; they are temporarily stored in a buffer and applied only when the target neuron is visited in the next scanning round. This entire process constitutes one complete time step.
-
----
-
-### Operating State
-
-This branch has no sleep state. The engine always runs under the same set of rules:
-
-- **Basic scanning and spike conduction**: The scanner runs continuously, and all neurons update normally as described above.
-- **STDP (Spike-Timing-Dependent Plasticity)**: For each pair of pre- and post-synaptic neurons, the weight of their existing synaptic connection is adjusted in real time based on the temporal difference between their spikes.
-- **Dynamic threshold updates**: Each neuron's firing threshold continuously adapts according to its membrane-potential sliding window.
-- **Pruning**: Connections whose weights have decayed to near 0 are treated as pruned and no longer participate in effective computation.
-
----
-
-### Standardized Engine Interface
-
-The engine provides the following standard interaction methods:
-
-- **Signal input to the first face**: The external system injects a full-face analog intensity map (each value between -1 and 1) into all neurons on the first face at once. Each positional intensity value is directly added to the corresponding neuron's current membrane potential.
-- **Read motor neuron spikes from the second face**: The external system reads, all at once, the firing states of all motor neurons on the second face, as the source of control commands.
-
-> The engine does not include internal "convergence detection" or "step-waiting" mechanisms. The external system performs full-face reads and writes at its own sampling frequency, while the engine continuously runs its scanning process in the background.
-
----
-
-## Peripheral Interaction Loop (External Application Layer)
-
-The engine itself does not care about the specific physical meaning of signals. All sensory encoding, signal computation, and actuator driving are implemented outside the engine and interact with it through the above interfaces.
-
-### Sensory Encoding
-
-Various physical signals are encoded externally as intensity maps in the range -1 to 1:
-
-- **Vision**: An image is split into RGB channels. Each pixel corresponds to a neuron position on the first face, and the normalized intensity of the corresponding color channel is fed there.
-- **Audition**: An audio signal is decomposed into its frequency spectrum. The energy intensity of each frequency band is mapped to -1 to 1 and fed to the corresponding positions on the first face.
-- **Touch**: Readings from tactile pressure sensors are linearly mapped to -1 to 1 and fed to corresponding first-face neurons.
-- Odor, temperature, and other modalities can be encoded similarly.
-
----
-
-### Motor Execution Extension
-
-On the second face of the network, motor neurons are placed. The external system reads the spike activity of these neurons and maps it to control commands, for example:
-
-- In autonomous driving, a neuron firing might command a 1-degree left turn of the wheels.
-- In a robot, it might command a speaker (as a "vocal apparatus") to emit a sound at a certain frequency.
-
-These motor neurons do not directly receive signals. However, their output actions alter the external environment, which in turn affects the inputs fed to the first face at the next moment. Thus, a complete closed-loop control circuit is formed indirectly through the external world.
+网络设计为模拟生物脑，从设计上是追求智能和行动的统一、思维和记忆的统一、多模态的统一的，另外，其网络结构还可以拓展到更高维，也就是也许能天生具备理解高维的能力（这点不同于LLM的高维坐标描述述语言，也许接近我们认为的“理解”）。目前处于早期探索阶段，仍然需要继续研究。
