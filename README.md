@@ -23,10 +23,10 @@
 引擎是一个具有三维空间坐标的脉冲神经网络，分为三个功能区域：
 
 - **第一面**：接收外部输入
-- **第二面**：对外输出，并放置动作神经元
+- **第二面**：放置动作神经元
 - **中间神经网络**：连接第一面与第二面
 
-第一面的接收输入神经元和第二面的输出神经元是对应的，但动作神经元并不与第一面对应。
+第一面的接收输入神经元和第二面的动作神经元不对应。
 
 #### 初始化方式
 
@@ -100,8 +100,7 @@
 引擎对外提供以下标准交互方式：
 
 - **向第一面传入信号**：外部系统将一整面模拟强度图（每个值在 -1 到 1 之间）一次性注入第一面的所有神经元。每个位置的强度值直接叠加到对应神经元的当前膜电位上。
-- **从第二面读取输出**：外部系统一次性读取第二面所有神经元的当前实时膜电位值（连续标量），作为网络对当前输入的综合输出。
-- **向第二面注入信号**：外部系统将计算得到的信号（同样为 -1 到 1 的整面强度图）一次性注入第二面除动作神经元外的神经元，直接叠加到其膜电位上。
+- **从第二面读取动作神经元放电**：外部系统一次性读取第二面所有动作神经元的放电状态，作为控制指令来源。
 
 > 引擎内部不设“收敛判定”或“步长等待”。外部系统按照自身的采样频率随时进行整面读写，引擎始终在后台持续运行其扫描过程。
 
@@ -124,7 +123,7 @@
 
 ### 动作执行扩展
 
-在网络的第二面，可新建若干不参与信号回传的神经元作为动作神经元。外部系统读取这些神经元的放电，将其映射为控制指令，例如：
+在网络的第二面，放置若干动作神经元。外部系统读取这些神经元的放电，将其映射为控制指令，例如：
 
 - 自动驾驶场景下某个神经元放电则控制车轮左转1度
 - 机器人场景下控制扬声器（作为“声带”）发出某个频率的声音
@@ -149,10 +148,10 @@ A spiking neural network structured by 3D spatial coordinates, using pre-fully-c
 The engine is a spiking neural network with 3D spatial coordinates, divided into three functional regions:
 
 - **First face**: Receives external input.
-- **Second face**: Outputs and hosts motor neurons.
+- **Second face**: Hosts motor neurons.
 - **Intermediate neural network**: Connects the first face to the second face.
 
-The input neurons on the first face and the output neurons on the second face are correspondingly paired, but motor neurons do not correspond to the first face.
+The input neurons on the first face and the motor neurons on the second face are not correspondingly paired.
 
 #### Initialization Method
 
@@ -226,8 +225,7 @@ This branch has no sleep state. The engine always runs under the same set of rul
 The engine provides the following standard interaction methods:
 
 - **Signal input to the first face**: The external system injects a full-face analog intensity map (each value between -1 and 1) into all neurons on the first face at once. Each positional intensity value is directly added to the corresponding neuron's current membrane potential.
-- **Output reading from the second face**: The external system reads, all at once, the current real-time membrane potentials (continuous scalars) of all neurons on the second face, as the network's comprehensive output for the current input.
-- **Signal injection to the second face**: The external system injects a computed signal (also a full-face intensity map, values in -1 to 1) into all neurons on the second face except the motor neurons, directly adding it to their membrane potentials.
+- **Read motor neuron spikes from the second face**: The external system reads, all at once, the firing states of all motor neurons on the second face, as the source of control commands.
 
 > The engine does not include internal "convergence detection" or "step-waiting" mechanisms. The external system performs full-face reads and writes at its own sampling frequency, while the engine continuously runs its scanning process in the background.
 
@@ -250,7 +248,7 @@ Various physical signals are encoded externally as intensity maps in the range -
 
 ### Motor Execution Extension
 
-On the second face of the network, a number of new neurons can be designated as motor neurons that do not participate in signal feedback. The external system reads the spike activity of these neurons and maps it to control commands, for example:
+On the second face of the network, motor neurons are placed. The external system reads the spike activity of these neurons and maps it to control commands, for example:
 
 - In autonomous driving, a neuron firing might command a 1-degree left turn of the wheels.
 - In a robot, it might command a speaker (as a "vocal apparatus") to emit a sound at a certain frequency.
