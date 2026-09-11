@@ -1,21 +1,22 @@
 """
-SUSNN 核心脉冲引擎 —— 对应设计文档的干净实现
+SUSNN 核心脉冲引擎 —— 纯动作输出版
 ============================================================
 
-严格遵循设计文档《SUSNN: Self-Unifying Spiking Neural Network》：
+对应设计文档《SUSNN: Self-Unifying Spiking Neural Network》：
 
-- 预全连接初始化：连接半径内的所有神经元对**全部**建立连接，
-  权重为较小随机值。无 15% 稀疏化，无睡眠态生长。
+- 预全连接初始化：连接半径内的所有神经元对**全部**建边，权重取小随机值。
+- 三个功能区：
+    · 第一面：接收外部输入（face_rows × face_cols 网格，z=0）
+    · 中间层：坐标由外部星系数据提供
+    · 第二面：仅由动作神经元组成（z=space_depth），不对外输出
 - 无睡眠态、无结构可塑性、无误差驱动、无预测闭环。
-- 权重**仅由 STDP 调整**，无额外衰减项。
-  （设计文档中"权重衰减至接近 0 即视为剪枝"由 STDP 的 LTD
-   项自然产生，不引入任何独立衰减机制。）
-- 中间层坐标必须由外部提供（galaxy_coords）。
+- 权重**仅由 STDP 调整**，无额外衰减。反向时序会被 LTD 压向 0，等效剪枝。
 
-性能：
-- numpy 全向量化；CuPy 同构后端；device='auto' 时自动基准择优。
-- 一个时间步内所有神经元同步更新（等价于"同时扫描"语义，
-  因为脉冲本就通过双缓冲延迟一步传递）。
+对外接口：
+    inject_input()           向第一面注入 [-1,1] 强度图
+    read_action_spikes()     读动作神经元本轮发放
+    read_action_potentials() 读动作神经元当前膜电位
+    get_stats() / get_layer_stats()
 """
 
 from __future__ import annotations
@@ -75,13 +76,12 @@ def _block_cross(starts: np.ndarray, counts: np.ndarray,
 class PulseEngine:
     """
     核心脉冲引擎（向量化实现）。
-    对外接口与设计文档一致。
+    第一面 = 输入，中间层 = 星系坐标，第二面 = 纯动作神经元。
     """
 
     LAYER_FIRST  = 0
-    LAYER_SECOND = 1
-    LAYER_MIDDLE = 2
-    LAYER_ACTION = 3
+    LAYER_MIDDLE = 1
+    LAYER_ACTION = 2
 
     _STATE_ARRAYS = ("membrane", "thresholds", "traces", "roll_sum", "fired",
                      "pot_history", "edge_pre", "edge_post", "edge_w")
@@ -120,7 +120,7 @@ class PulseEngine:
         self.n_face          = face_rows * face_cols
         self.n_middle        = n_middle
         self.n_action        = n_action
-        self.n_total         = self.n_face * 2 + n_middle + n_action
+        self.n_total         = self.n_face + n_middle + n_action
         self.connection_radius = connection_radius
         self.space_depth     = space_depth
         self.window_size     = window_size
@@ -151,16 +151,21 @@ class PulseEngine:
             raise ValueError(f"device 须为 'auto'/'cpu'/'gpu', 收到 {device!r}")
 
     # -------------------------------------------------------------------
-    # 网络构建：空间坐标
+    # 网络构建：第一面 + 中间层 + 动作面
     # -------------------------------------------------------------------
 
     def _build_network(self, galaxy_coords: Optional[np.ndarray]):
-        """第一面 z=0，第二面 z=space_depth，中间层由外部坐标缩放，动作层单列。"""
+        """
+        坐标布局：
+          第一面  : z = 0,      网格 (face_cols × face_rows)
+          中间层  : z ∈ [0.3, space_depth - 0.3]，坐标由外部缩放
+          第二面  : z = space_depth，仅含 n_action 个动作神经元
+        """
         positions: List[List[float]] = []
         layer_ids: List[int] = []
         idx = 0
 
-        # 第一面
+        # ---- 第一面：接收输入 ----
         for r in range(self.face_rows):
             for c in range(self.face_cols):
                 positions.append([float(c), float(r), 0.0])
@@ -168,15 +173,7 @@ class PulseEngine:
         self.first_start, self.first_end = 0, idx + self.n_face
         idx = self.first_end
 
-        # 第二面
-        for r in range(self.face_rows):
-            for c in range(self.face_cols):
-                positions.append([float(c), float(r), self.space_depth])
-                layer_ids.append(self.LAYER_SECOND)
-        self.second_start, self.second_end = idx, idx + self.n_face
-        idx = self.second_end
-
-        # 中间层（外部坐标）
+        # ---- 中间层：坐标来自外部 ----
         if self.n_middle > 0:
             if galaxy_coords is None:
                 raise ValueError(
@@ -199,23 +196,29 @@ class PulseEngine:
         self.middle_start, self.middle_end = idx, idx + self.n_middle
         idx = self.middle_end
 
-        # 动作层（单列排在第二面之外，不与第一面对应）
+        # ---- 第二面 = 动作面：只有动作神经元 ----
+        # 沿 x 轴均匀铺在 z = space_depth 平面上，y 居中。
+        # 动作神经元之间相距较远时互不连接；间距足够近则由半径决定。
         for i in range(self.n_action):
-            positions.append([self.face_cols + 2.0 + i * 1.5,
-                              self.face_rows / 2.0,
-                              self.space_depth])
+            if self.n_action > 1:
+                x = (i + 0.5) * self.face_cols / self.n_action
+            else:
+                x = self.face_cols * 0.5
+            positions.append([x, self.face_rows / 2.0, self.space_depth])
             layer_ids.append(self.LAYER_ACTION)
-        self.action_start, self.action_end = idx, idx + self.n_action
-        idx = self.action_end
+        self.second_start, self.second_end = idx, idx + self.n_action
+        idx = self.second_end
 
         assert idx == self.n_total
         self.positions = np.array(positions, dtype=np.float32)
         self.layer_ids = np.array(layer_ids, dtype=np.int32)
 
         self.is_input_neuron  = (self.layer_ids == self.LAYER_FIRST)
-        self.is_pred_neuron   = (self.layer_ids == self.LAYER_SECOND)
-        self.is_action_neuron = (self.layer_ids == self.LAYER_ACTION)
         self.is_middle_neuron = (self.layer_ids == self.LAYER_MIDDLE)
+        self.is_action_neuron = (self.layer_ids == self.LAYER_ACTION)
+
+        # 便捷别名
+        self.action_start, self.action_end = self.second_start, self.second_end
 
     def _scale_galaxy_coords(self, coords: np.ndarray) -> np.ndarray:
         """外部坐标只提供"相对形状"，引擎 min-max 归一化映射进网络空间。"""
@@ -259,7 +262,6 @@ class PulseEngine:
         lo_list: List[np.ndarray] = []
         hi_list: List[np.ndarray] = []
 
-        # 跨单元格：13 个规范偏移
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 for dz in (-1, 0, 1):
@@ -287,7 +289,6 @@ class PulseEngine:
                         lo_list.append(np.minimum(a[keep], b[keep]))
                         hi_list.append(np.maximum(a[keep], b[keep]))
 
-        # 同单元格内部
         multi = np.flatnonzero(counts > 1)
         if multi.size:
             ia, ib = _block_cross(starts, counts, multi, multi)
@@ -311,10 +312,7 @@ class PulseEngine:
     # -------------------------------------------------------------------
 
     def _init_connections(self):
-        """
-        设计文档：所有满足连接半径的神经元对**全部**建立连接，
-        权重设为较小随机值。不做稀疏化，不做任何动态生长搜索。
-        """
+        """所有满足连接半径的神经元对**全部**建边，权重取小随机值。"""
         ids = np.arange(self.n_total, dtype=np.int64)
         lo, hi = self._pairs_within_radius(ids)
         if lo.size:
@@ -335,7 +333,6 @@ class PulseEngine:
         self.membrane   = np.zeros(N, dtype=dt)
         self.thresholds = np.full(N, self.base_threshold, dtype=dt)
         self.traces     = np.zeros(N, dtype=dt)
-        # (W, N) 布局：每步写一行，内存连续
         self.pot_history = np.zeros((self.window_size, N), dtype=np.float32)
         self.roll_sum    = np.zeros(N, dtype=dt)
         self.hist_ptr    = 0
@@ -350,16 +347,15 @@ class PulseEngine:
 
     def step(self):
         """
-        一个时间步 = 所有神经元各更新一次（同时扫描语义）。
+        一个时间步 = 所有神经元各更新一次（同步扫描语义）。
 
-        流程：
-        1. 双缓冲交换（上一步散射的脉冲本步到达）
-        2. STDP 迹全局衰减
-        3. 到达脉冲叠加到膜电位（外部注入已由 inject_* 提前叠加）
+        1. 双缓冲交换
+        2. STDP 迹衰减
+        3. 到达脉冲叠加
         4. 阈值判定 → 发放 / 仅积分；发放者减法重置
-        5. STDP：按迹更新权重（同步语义，迹为本步衰减后、发放增量前）
+        5. STDP：按迹更新权重（无额外衰减项）
         6. 发放神经元迹 +1
-        7. 发放脉冲按（STDP 后）权重散射进下一时间步缓冲
+        7. 脉冲按（STDP 后）权重散射进下一时间步缓冲
         8. 滑动窗口滚动和 + 动态阈值
         """
         xp = self._xp
@@ -376,7 +372,7 @@ class PulseEngine:
         # 3. 到达脉冲叠加
         self.membrane += pulse_in
 
-        # 4. 阈值判定 + 减法重置（保留超出部分，形成类不应期）
+        # 4. 阈值判定 + 减法重置
         fire = self.membrane >= self.thresholds
         fire_f = fire.astype(self.dtype)
         self.membrane -= self.thresholds * fire_f
@@ -387,11 +383,10 @@ class PulseEngine:
             e_pre, e_post = self.edge_pre, self.edge_post
             fire_pre  = fire_f[e_pre]
             fire_post = fire_f[e_post]
-            # 纯 STDP，无额外衰减项
+            # 纯 STDP：前→后 LTP，后→前 LTD。无独立衰减。
             delta = (self.stdp_lr_plus  * self.traces[e_pre]  * fire_post
                      - self.stdp_lr_minus * self.traces[e_post] * fire_pre)
             self.edge_w += delta
-            # 边界裁剪仅为数值稳定；w_min=0 时权重可衰减至 0（视为剪枝）
             xp.clip(self.edge_w, self.w_min, self.w_max, out=self.edge_w)
 
             pulse_out[...] = xp.bincount(
@@ -399,7 +394,7 @@ class PulseEngine:
         else:
             pulse_out.fill(0)
 
-        # 6. 发放神经元迹 +1（置于 STDP 之后）
+        # 6. 发放神经元迹 +1
         self.traces += fire_f
 
         # 8. 滑动窗口 + 动态阈值
@@ -429,7 +424,6 @@ class PulseEngine:
             self.device_name = "gpu(cupy)"
             return
 
-        # auto 模式：小网络走启发式，避免 benchmark 开销
         if bench_steps <= 0 or self.edge_pre.size == 0:
             if self.edge_pre.size >= 200_000 or self.n_total >= 50_000:
                 self._to_device(cp)
@@ -438,7 +432,6 @@ class PulseEngine:
 
         snap = self._snapshot_state()
 
-        # CPU 基准
         for _ in range(3):
             self.step()
         self._restore_state(snap)
@@ -447,7 +440,6 @@ class PulseEngine:
             self.step()
         t_cpu = (time.perf_counter() - t0) / bench_steps
 
-        # GPU 基准
         self._restore_state(snap)
         self._to_device(cp)
         for _ in range(3):
@@ -479,7 +471,6 @@ class PulseEngine:
                           for b in self.pulse_buf]
 
     def move_to_device(self, device: str):
-        """运行时手动迁移（'cpu'/'gpu'）；请在后台线程未运行时调用。"""
         if device == "cpu":
             self._to_device(np)
             self.device_name = "cpu(numpy)"
@@ -510,27 +501,15 @@ class PulseEngine:
         self.time_step = snap["time_step"]
 
     # ===================================================================
-    # 标准化接口
+    # 标准化接口（去掉 read_output / inject_error）
     # ===================================================================
 
     def inject_input(self, signal):
         """向第一面注入 [-1,1] 强度图，直接叠加到对应神经元膜电位。"""
         flat = np.asarray(signal, dtype=self.dtype).reshape(-1)
         n = min(flat.size, self.n_face)
-        self.membrane[self.first_start:self.first_start + n] += self._xp.asarray(flat[:n])
-
-    def read_output(self) -> np.ndarray:
-        """读取第二面当前膜电位（连续标量）。"""
-        seg = self.membrane[self.second_start:self.second_end]
-        if self._xp is not np:
-            seg = seg.get()
-        return seg.reshape(self.face_rows, self.face_cols).copy()
-
-    def inject_error(self, error):
-        """向第二面（除动作神经元）注入信号，直接叠加到膜电位。"""
-        flat = np.asarray(error, dtype=self.dtype).reshape(-1)
-        n = min(flat.size, self.n_face)
-        self.membrane[self.second_start:self.second_start + n] += self._xp.asarray(flat[:n])
+        self.membrane[self.first_start:self.first_start + n] += \
+            self._xp.asarray(flat[:n])
 
     def read_action_spikes(self) -> np.ndarray:
         """动作神经元本轮是否发放。"""
@@ -569,7 +548,6 @@ class PulseEngine:
 
     def get_layer_stats(self) -> dict:
         spans = {"first":  (self.first_start, self.first_end),
-                 "second": (self.second_start, self.second_end),
                  "middle": (self.middle_start, self.middle_end),
                  "action": (self.action_start, self.action_end)}
         stats = {}
@@ -589,10 +567,7 @@ class PulseEngine:
 # ===========================================================================
 
 class EngineRunner:
-    """
-    后台线程持续运行引擎，外部随时读写。
-    计时为绝对时刻调度，避免长期漂移；steps_per_sec 为 None 时自由运行。
-    """
+    """后台线程持续运行引擎，外部随时读写。"""
 
     def __init__(self, engine: PulseEngine, steps_per_sec: Optional[float] = 200):
         self.engine = engine
@@ -624,18 +599,9 @@ class EngineRunner:
                 else:
                     next_t = time.perf_counter()
 
-    # ---- 线程安全接口 ----
     def inject_input(self, signal):
         with self._lock:
             self.engine.inject_input(signal)
-
-    def read_output(self) -> np.ndarray:
-        with self._lock:
-            return self.engine.read_output()
-
-    def inject_error(self, error):
-        with self._lock:
-            self.engine.inject_error(error)
 
     def read_action_spikes(self) -> np.ndarray:
         with self._lock:
@@ -655,14 +621,14 @@ class EngineRunner:
 
 
 # ===========================================================================
-# 第三部分：演示（含占位坐标生成器，非引擎组成部分）
+# 第三部分：演示用占位坐标（非引擎组成部分）
 # ===========================================================================
 
 def demo_placeholder_galaxy_coords(n: int, seed: int = 42) -> np.ndarray:
     """
-    ⚠ 占位数据源，仅用于 demo/测试，代替真实的外部星系坐标数据。
+    ⚠ 占位数据源，仅用于 demo/测试。
     生成 n 个 [0,1]^3 的"星系状"坐标（大星团 + 小星群 + 均匀补齐）。
-    引擎本身不依赖此函数；真实部署时请用实际数据替换。
+    真实部署时用实际数据替换；引擎本身不依赖此函数。
     """
     rng = np.random.default_rng(seed)
     coords: List[np.ndarray] = []
@@ -697,9 +663,13 @@ def demo_placeholder_galaxy_coords(n: int, seed: int = 42) -> np.ndarray:
     return np.array(coords[:n])
 
 
+# ===========================================================================
+# 第四部分：演示
+# ===========================================================================
+
 def demo_basic():
     print("=" * 70)
-    print("SUSNN 核心引擎 —— 基础运行演示")
+    print("SUSNN 核心引擎 —— 纯动作输出演示")
     print("=" * 70)
 
     galaxy = demo_placeholder_galaxy_coords(n=500, seed=42)
@@ -708,7 +678,9 @@ def demo_basic():
                          window_size=100, stdp_tau=15.0, seed=42,
                          galaxy_coords=galaxy)
     print(f"\n运行设备   : {engine.device_name}")
-    print(f"总神经元数 : {engine.n_total}")
+    print(f"总神经元数 : {engine.n_total}  "
+          f"(第一面 {engine.n_face} + 中间 {engine.n_middle} "
+          f"+ 动作 {engine.n_action})")
     print(f"初始连接数 : {engine.get_connection_count()}")
 
     def make_input(t: int) -> np.ndarray:
@@ -728,8 +700,8 @@ def demo_basic():
         if (t + 1) % 500 == 0:
             stats = engine.get_stats()
             print(f"  step={stats['time_step']:5d} | "
-                  f"firing_rate={stats['firing_rate']:.3f} | "
-                  f"mean_thr={stats['mean_threshold']:.3f} | "
+                  f"fire={stats['firing_rate']:.3f} | "
+                  f"thr={stats['mean_threshold']:.3f} | "
                   f"conns={stats['n_connections']}")
     dt = time.perf_counter() - t0
     print(f"\n  {n_steps} 步用时 {dt:.2f}s ({n_steps / dt:.0f} steps/s)")
@@ -746,6 +718,13 @@ def demo_basic():
     print("\n--- 动作神经元 ---")
     for i in range(len(spikes)):
         print(f"  动作{i}: 发放={bool(spikes[i])} | 膜电位={pots[i]:+.3f}")
+
+    # 观察 STDP 剪枝效果
+    w = engine.edge_w if engine._xp is np else engine.edge_w.get()
+    print(f"\n--- 权重分布 ---")
+    print(f"  总边数  : {w.size}")
+    print(f"  ≈0 的边 : {(w <= 1e-6).sum()}  (被 LTD 压到 0)")
+    print(f"  min/med/max: {w.min():.4f} / {np.median(w):.4f} / {w.max():.4f}")
     print("=" * 70)
 
 
